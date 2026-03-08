@@ -1,17 +1,111 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
+import io, { Socket } from "socket.io-client";
+
+// Types
+interface Agent {
+  id: string;
+  name: string;
+  role: string;
+  icon: string;
+  tag: string;
+  status: 'active' | 'idle' | 'thinking';
+  task: string;
+}
+
+interface Meeting {
+  id: string;
+  title: string;
+  participants: string[];
+  status: 'active' | 'scheduled' | 'ended';
+  createdAt: string;
+  messages?: Message[];
+}
+
+interface Message {
+  id: string;
+  content: string;
+  sender: string;
+  timestamp: string;
+  type: 'user' | 'agent';
+}
+
+// API Configuration
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3002';
+
+// Custom hook for WebSocket
+function useSocket() {
+  const [socket, setSocket] = useState<Socket | null>(null);
+  const [connected, setConnected] = useState(false);
+
+  useEffect(() => {
+    const newSocket = io(API_URL);
+    
+    newSocket.on('connect', () => {
+      console.log('Connected to Panic OS server');
+      setConnected(true);
+    });
+
+    newSocket.on('disconnect', () => {
+      console.log('Disconnected from Panic OS server');
+      setConnected(false);
+    });
+
+    setSocket(newSocket);
+
+    return () => {
+      newSocket.close();
+    };
+  }, []);
+
+  return { socket, connected };
+}
 
 // Agent Hub Component
-function AgentHub() {
-  const agents = [
-    { id: 1, name: "Builder", role: "Execution Engine", status: "active", task: "Deploying Panic OS", tag: "Pragmatic", icon: "🛠️" },
-    { id: 2, name: "Researcher", role: "Information Gatherer", status: "idle", task: "Awaiting query", tag: "Thorough", icon: "🔍" },
-    { id: 3, name: "QA", role: "Quality Assurance", status: "thinking", task: "Analyzing test results", tag: "Analytical", icon: "🧪" },
-    { id: 4, name: "Docs", role: "Documentation", status: "active", task: "Writing API docs", tag: "Detail-oriented", icon: "📝" },
-    { id: 5, name: "Reviewer", role: "Code Reviewer", status: "idle", task: "Awaiting PR", tag: "Critical", icon: "👁️" },
-    { id: 6, name: "Panic", role: "Coordinator", status: "active", task: "Orchestrating tasks", tag: "Strategic", icon: "⚡" },
-  ];
+function AgentHub({ socket }: { socket: Socket | null }) {
+  const [agents, setAgents] = useState<Agent[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const fetchAgents = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_URL}/api/agents`);
+      const data = await response.json();
+      setAgents(data);
+    } catch (error) {
+      console.error('Error fetching agents:', error);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchAgents();
+    const interval = setInterval(fetchAgents, 5000);
+    return () => clearInterval(interval);
+  }, [fetchAgents]);
+
+  const spawnAgent = async (agentId: string) => {
+    try {
+      await fetch(`${API_URL}/api/agents/${agentId}/spawn`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task: 'General assistance' })
+      });
+      fetchAgents();
+    } catch (error) {
+      console.error('Error spawning agent:', error);
+    }
+  };
+
+  const killAgent = async (agentId: string) => {
+    try {
+      await fetch(`${API_URL}/api/agents/${agentId}/kill`, { method: 'POST' });
+      fetchAgents();
+    } catch (error) {
+      console.error('Error killing agent:', error);
+    }
+  };
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -22,6 +116,10 @@ function AgentHub() {
     }
   };
 
+  if (loading) {
+    return <div className="text-center py-10 text-gray-500">Loading agents...</div>;
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -30,9 +128,9 @@ function AgentHub() {
         </h2>
         <div className="flex items-center gap-2 text-sm font-mono text-gray-400">
           <span className="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_10px_rgba(34,197,94,0.8)]" />
-          4 ACTIVE
+          {agents.filter(a => a.status === 'active').length} ACTIVE
           <span className="w-2 h-2 rounded-full bg-yellow-500 ml-4 shadow-[0_0_10px_rgba(234,179,8,0.8)]" />
-          2 IDLE
+          {agents.filter(a => a.status === 'idle').length} IDLE
         </div>
       </div>
 
@@ -59,9 +157,21 @@ function AgentHub() {
               <span className="text-xs font-mono px-2 py-1 bg-red-500/10 text-red-400 rounded">
                 {agent.tag}
               </span>
-              <span className={`text-xs font-mono uppercase ${agent.status === "active" ? "text-green-400" : agent.status === "thinking" ? "text-cyan-400" : "text-yellow-400"}`}>
-                {agent.status}
-              </span>
+              {agent.status === 'idle' ? (
+                <button 
+                  onClick={() => spawnAgent(agent.id)}
+                  className="text-xs font-mono px-3 py-1 bg-green-500/20 text-green-400 rounded hover:bg-green-500/30 transition-colors"
+                >
+                  ACTIVATE
+                </button>
+              ) : (
+                <button 
+                  onClick={() => killAgent(agent.id)}
+                  className="text-xs font-mono px-3 py-1 bg-red-500/20 text-red-400 rounded hover:bg-red-500/30 transition-colors"
+                >
+                  TERMINATE
+                </button>
+              )}
             </div>
           </div>
         ))}
@@ -71,12 +181,82 @@ function AgentHub() {
 }
 
 // Boardroom Component
-function Boardroom() {
-  const meetings = [
-    { id: 1, title: "Daily Standup", participants: ["Builder", "QA", "Docs"], status: "ongoing", time: "10:00 AM" },
-    { id: 2, title: "Architecture Review", participants: ["Builder", "Panic", "Reviewer"], status: "scheduled", time: "2:00 PM" },
-    { id: 3, title: "Sprint Planning", participants: ["All Agents"], status: "scheduled", time: "Tomorrow" },
-  ];
+function Boardroom({ socket }: { socket: Socket | null }) {
+  const [meetings, setMeetings] = useState<Meeting[]>([]);
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [newMeetingTitle, setNewMeetingTitle] = useState('');
+  const [selectedAgents, setSelectedAgents] = useState<string[]>([]);
+  const [availableAgents, setAvailableAgents] = useState<Agent[]>([]);
+
+  useEffect(() => {
+    fetchMeetings();
+    fetchAvailableAgents();
+    
+    if (socket) {
+      socket.on('meeting:ended', () => {
+        fetchMeetings();
+      });
+    }
+  }, [socket]);
+
+  const fetchMeetings = async () => {
+    try {
+      const response = await fetch(`${API_URL}/api/meetings`);
+      const data = await response.json();
+      setMeetings(data);
+    } catch (error) {
+      console.error('Error fetching meetings:', error);
+    }
+  };
+
+  const fetchAvailableAgents = async () => {
+    try {
+      const response = await fetch(`${API_URL}/api/agents`);
+      const data = await response.json();
+      setAvailableAgents(data);
+    } catch (error) {
+      console.error('Error fetching agents:', error);
+    }
+  };
+
+  const createMeeting = async () => {
+    try {
+      const response = await fetch(`${API_URL}/api/meetings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: newMeetingTitle,
+          participants: selectedAgents
+        })
+      });
+      const meeting = await response.json();
+      
+      // Start the meeting with agents
+      if (socket) {
+        socket.emit('meeting:start', {
+          meetingId: meeting.id,
+          title: meeting.title,
+          participants: selectedAgents
+        });
+      }
+      
+      setShowCreateModal(false);
+      setNewMeetingTitle('');
+      setSelectedAgents([]);
+      fetchMeetings();
+    } catch (error) {
+      console.error('Error creating meeting:', error);
+    }
+  };
+
+  const endMeeting = async (meetingId: string) => {
+    try {
+      await fetch(`${API_URL}/api/meetings/${meetingId}/end`, { method: 'POST' });
+      fetchMeetings();
+    } catch (error) {
+      console.error('Error ending meeting:', error);
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -84,269 +264,229 @@ function Boardroom() {
         <h2 className="text-2xl font-bold">
           <span className="text-red-500">▸</span> BOARDROOM
         </h2>
-        <button className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg font-medium transition-colors shadow-[0_0_20px_rgba(239,68,68,0.3)]">
+        <button 
+          onClick={() => setShowCreateModal(true)}
+          className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg font-medium transition-colors shadow-[0_0_20px_rgba(239,68,68,0.3)]"
+        >
           + New Meeting
         </button>
       </div>
 
+      {showCreateModal && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50">
+          <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg p-6 w-full max-w-md">
+            <h3 className="text-lg font-bold mb-4">Create New Meeting</h3>
+            <input
+              type="text"
+              value={newMeetingTitle}
+              onChange={(e) => setNewMeetingTitle(e.target.value)}
+              placeholder="Meeting title..."
+              className="w-full bg-[#0f0f0f] border border-[#2a2a2a] rounded p-3 mb-4 text-white"
+            />
+            <div className="mb-4">
+              <p className="text-sm text-gray-500 mb-2">Select participants:</p>
+              <div className="space-y-2">
+                {availableAgents.map(agent => (
+                  <label key={agent.id} className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={selectedAgents.includes(agent.id)}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setSelectedAgents([...selectedAgents, agent.id]);
+                        } else {
+                          setSelectedAgents(selectedAgents.filter(id => id !== agent.id));
+                        }
+                      }}
+                      className="rounded bg-[#0f0f0f] border-[#2a2a2a]"
+                    />
+                    <span>{agent.icon} {agent.name}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={createMeeting}
+                className="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 rounded font-medium"
+              >
+                Start Meeting
+              </button>
+              <button
+                onClick={() => setShowCreateModal(false)}
+                className="flex-1 px-4 py-2 bg-[#2a2a2a] hover:bg-[#3a3a3a] rounded font-medium"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="space-y-4">
-          <h3 className="text-lg font-semibold text-gray-400">Meetings</h3>
-          {meetings.map((meeting) => (
+          <h3 className="text-lg font-semibold text-gray-400">Active Meetings</h3>
+          {meetings.filter(m => m.status === 'active').map((meeting) => (
             <div key={meeting.id} className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg p-4 hover:border-red-500/50 transition-all">
               <div className="flex items-center justify-between mb-2">
                 <h4 className="font-semibold">{meeting.title}</h4>
-                <span className={`text-xs font-mono px-2 py-1 rounded ${meeting.status === "ongoing" ? "bg-green-500/20 text-green-400" : "bg-blue-500/20 text-blue-400"}`}>
-                  {meeting.status.toUpperCase()}
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-mono px-2 py-1 rounded bg-green-500/20 text-green-400">
+                    ACTIVE
+                  </span>
+                  <button
+                    onClick={() => endMeeting(meeting.id)}
+                    className="text-xs font-mono px-2 py-1 rounded bg-red-500/20 text-red-400 hover:bg-red-500/30"
+                  >
+                    END
+                  </button>
+                </div>
               </div>
-              <p className="text-sm text-gray-500 mb-2">{meeting.time}</p>
               <div className="flex items-center gap-2">
                 <span className="text-xs text-gray-500">Participants:</span>
                 <span className="text-sm">{meeting.participants.join(", ")}</span>
               </div>
             </div>
           ))}
+          {meetings.filter(m => m.status === 'active').length === 0 && (
+            <p className="text-gray-500 text-center py-8">No active meetings</p>
+          )}
         </div>
 
-        <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg p-6">
-          <h3 className="text-lg font-semibold text-gray-400 mb-4">Quick Actions</h3>
-          <div className="space-y-3">
-            <button className="w-full p-3 bg-[#0f0f0f] border border-[#2a2a2a] rounded-lg text-left hover:border-red-500/50 transition-all">
-              <div className="font-medium">Start Voice Chat</div>
-              <div className="text-xs text-gray-500">Begin an audio discussion with agents</div>
-            </button>
-            <button className="w-full p-3 bg-[#0f0f0f] border border-[#2a2a2a] rounded-lg text-left hover:border-red-500/50 transition-all">
-              <div className="font-medium">Schedule Meeting</div>
-              <div className="text-xs text-gray-500">Plan a future discussion</div>
-            </button>
-            <button className="w-full p-3 bg-[#0f0f0f] border border-[#2a2a2a] rounded-lg text-left hover:border-red-500/50 transition-all">
-              <div className="font-medium">View Transcripts</div>
-              <div className="text-xs text-gray-500">Access past meeting records</div>
-            </button>
-          </div>
+        <div className="space-y-4">
+          <h3 className="text-lg font-semibold text-gray-400">Past Meetings</h3>
+          {meetings.filter(m => m.status === 'ended').map((meeting) => (
+            <div key={meeting.id} className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg p-4 opacity-50">
+              <div className="flex items-center justify-between mb-2">
+                <h4 className="font-semibold">{meeting.title}</h4>
+                <span className="text-xs font-mono px-2 py-1 rounded bg-gray-500/20 text-gray-400">
+                  ENDED
+                </span>
+              </div>
+            </div>
+          ))}
         </div>
       </div>
     </div>
   );
 }
 
-// Command Chat Component
-function CommandChat() {
-  const [messages, setMessages] = useState([
-    { id: 1, agent: "Panic", text: "Welcome to Command. How can I help you today?", time: "10:00 AM", self: false },
-  ]);
-  const [input, setInput] = useState("");
+// Active Meeting Chat Component
+function ActiveMeeting({ socket, meetingId }: { socket: Socket | null; meetingId: string }) {
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [input, setInput] = useState('');
+  const [meeting, setMeeting] = useState<Meeting | null>(null);
+
+  useEffect(() => {
+    if (!socket || !meetingId) return;
+
+    // Join the meeting room
+    socket.emit('meeting:join', meetingId);
+
+    // Load meeting history
+    fetch(`${API_URL}/api/meetings/${meetingId}`)
+      .then(res => res.json())
+      .then(data => {
+        setMeeting(data);
+        if (data.messages) setMessages(data.messages);
+      });
+
+    // Listen for new messages
+    socket.on('meeting:message', (msg: Message) => {
+      setMessages(prev => [...prev, msg]);
+    });
+
+    return () => {
+      socket.off('meeting:message');
+    };
+  }, [socket, meetingId]);
 
   const sendMessage = () => {
-    if (!input.trim()) return;
-    const newMsg = { id: messages.length + 1, agent: "You", text: input, time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), self: true };
-    setMessages([...messages, newMsg]);
-    setInput("");
+    if (!input.trim() || !socket || !meetingId) return;
     
-    setTimeout(() => {
-      const response = { id: messages.length + 2, agent: "Builder", text: `Received: "${input}". Processing your request...`, time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), self: false };
-      setMessages(prev => [...prev, response]);
-    }, 1000);
+    socket.emit('meeting:message', {
+      meetingId,
+      message: input,
+      sender: 'You'
+    });
+    
+    setInput('');
   };
+
+  if (!meetingId) return null;
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h2 className="text-2xl font-bold">
-          <span className="text-red-500">▸</span> COMMAND CHAT
-        </h2>
-        <div className="flex items-center gap-2 text-sm text-gray-500">
-          <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
-          Connected
-        </div>
+    <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg h-[500px] flex flex-col">
+      <div className="p-4 border-b border-[#2a2a2a] flex items-center justify-between">
+        <h3 className="font-semibold">{meeting?.title || 'Meeting'}</h3>
+        <span className="text-xs text-green-400 flex items-center gap-1">
+          <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+          LIVE
+        </span>
       </div>
-
-      <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg h-[400px] flex flex-col">
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">
-          {messages.map((msg) => (
-            <div key={msg.id} className={`flex ${msg.self ? "justify-end" : "justify-start"}`}>
-              <div className={`max-w-[70%] rounded-lg p-3 ${msg.self ? "bg-red-600 text-white" : "bg-[#0f0f0f] border border-[#2a2a2a]"}`}>
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="text-xs font-mono font-semibold">{msg.agent}</span>
-                  <span className="text-xs opacity-50">{msg.time}</span>
-                </div>
-                <p className="text-sm">{msg.text}</p>
-              </div>
-            </div>
-          ))}
-        </div>
-        
-        <div className="p-4 border-t border-[#2a2a2a] flex gap-2">
-          <input
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyPress={(e) => e.key === "Enter" && sendMessage()}
-            placeholder="Type your command..."
-            className="flex-1 bg-[#0f0f0f] border border-[#2a2a2a] rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-red-500"
-          />
-          <button
-            onClick={sendMessage}
-            className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg font-medium transition-colors"
-          >
-            Send
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// Orchestration Feed Component
-function OrchestrationFeed() {
-  const activities = [
-    { id: 1, agent: "Builder", action: "completed task", target: "Deploy Panic OS", time: "2m ago", type: "success" },
-    { id: 2, agent: "Researcher", action: "found", target: "47 relevant results", time: "5m ago", type: "info" },
-    { id: 3, agent: "QA", action: "running tests on", target: "v2.1.0", time: "8m ago", type: "warning" },
-    { id: 4, agent: "Reviewer", action: "approved PR", target: "#142", time: "12m ago", type: "success" },
-    { id: 5, agent: "Docs", action: "updated", target: "API documentation", time: "15m ago", type: "info" },
-    { id: 6, agent: "Panic", action: "orchestrated", target: "new sprint planning", time: "20m ago", type: "info" },
-  ];
-
-  const getTypeColor = (type: string) => {
-    switch (type) {
-      case "success": return "text-green-400";
-      case "warning": return "text-yellow-400";
-      case "error": return "text-red-400";
-      default: return "text-blue-400";
-    }
-  };
-
-  return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h2 className="text-2xl font-bold">
-          <span className="text-red-500">▸</span> ORCHESTRATION FEED
-        </h2>
-        <div className="flex items-center gap-2 text-sm text-gray-500">
-          <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></span>
-          Live
-        </div>
-      </div>
-
-      <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg p-4">
-        <div className="space-y-3">
-          {activities.map((activity) => (
-            <div key={activity.id} className="flex items-start gap-3 p-3 bg-[#0f0f0f] rounded-lg border border-[#2a2a2a] hover:border-red-500/30 transition-all">
-              <div className={`w-2 h-2 rounded-full mt-1.5 ${getTypeColor(activity.type).replace("text", "bg")}`} />
-              <div className="flex-1">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="text-red-400 font-mono font-semibold">{activity.agent}</span>
-                  <span className="text-gray-500">{activity.action}</span>
-                  <span className={getTypeColor(activity.type)}>{activity.target}</span>
-                </div>
-                <div className="text-xs text-gray-600 mt-1 font-mono">{activity.time}</div>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// Projects Board Component
-function ProjectsBoard() {
-  const projects = [
-    { id: 1, name: "Panic OS Dashboard", status: "in-progress", priority: "high", progress: 75 },
-    { id: 2, name: "Agent API Integration", status: "todo", priority: "high", progress: 0 },
-    { id: 3, name: "Documentation Site", status: "done", priority: "medium", progress: 100 },
-    { id: 4, name: "Testing Framework", status: "in-progress", priority: "medium", progress: 45 },
-  ];
-
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case "done": return "bg-green-500/20 text-green-400 border-green-500/50";
-      case "in-progress": return "bg-blue-500/20 text-blue-400 border-blue-500/50";
-      case "todo": return "bg-gray-500/20 text-gray-400 border-gray-500/50";
-      default: return "bg-gray-500/20 text-gray-400";
-    }
-  };
-
-  const getPriorityColor = (priority: string) => {
-    switch (priority) {
-      case "high": return "text-red-400";
-      case "medium": return "text-yellow-400";
-      case "low": return "text-green-400";
-      default: return "text-gray-400";
-    }
-  };
-
-  return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h2 className="text-2xl font-bold">
-          <span className="text-red-500">▸</span> PROJECTS BOARD
-        </h2>
-        <button className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg font-medium transition-colors shadow-[0_0_20px_rgba(239,68,68,0.3)]">
-          + New Project
-        </button>
-      </div>
-
-      <div className="grid grid-cols-1 gap-4">
-        {projects.map((project) => (
-          <div key={project.id} className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg p-4 hover:border-red-500/50 transition-all">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="font-semibold text-lg">{project.name}</h3>
-              <div className="flex items-center gap-2">
-                <span className={`text-xs font-mono ${getPriorityColor(project.priority)}`}>
-                  {project.priority.toUpperCase()}
-                </span>
-                <span className={`text-xs font-mono px-2 py-1 rounded border ${getStatusColor(project.status)}`}>
-                  {project.status.replace("-", " ").toUpperCase()}
+      
+      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        {messages.map((msg) => (
+          <div key={msg.id} className={`flex ${msg.type === 'user' ? "justify-end" : "justify-start"}`}>
+            <div className={`max-w-[70%] rounded-lg p-3 ${msg.type === 'user' ? "bg-red-600 text-white" : "bg-[#0f0f0f] border border-[#2a2a2a]"}`}>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-xs font-mono font-semibold">{msg.sender}</span>
+                <span className="text-xs opacity-50">
+                  {new Date(msg.timestamp).toLocaleTimeString()}
                 </span>
               </div>
+              <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
             </div>
-            
-            <div className="w-full bg-[#0f0f0f] rounded-full h-2">
-              <div 
-                className="bg-gradient-to-r from-red-600 to-red-400 h-2 rounded-full transition-all"
-                style={{ width: `${project.progress}%` }}
-              />
-            </div>
-            <div className="text-xs text-gray-500 mt-2 font-mono">{project.progress}% complete</div>
           </div>
         ))}
+      </div>
+      
+      <div className="p-4 border-t border-[#2a2a2a] flex gap-2">
+        <input
+          type="text"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyPress={(e) => e.key === "Enter" && sendMessage()}
+          placeholder="Type your message..."
+          className="flex-1 bg-[#0f0f0f] border border-[#2a2a2a] rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-red-500"
+        />
+        <button
+          onClick={sendMessage}
+          className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg font-medium transition-colors"
+        >
+          Send
+        </button>
       </div>
     </div>
   );
 }
 
 // Main Dashboard Component
-type Section = "agents" | "boardroom" | "command" | "feed" | "projects";
+type Section = "agents" | "boardroom" | "meeting";
 
 export default function Home() {
   const [activeSection, setActiveSection] = useState<Section>("agents");
+  const [activeMeetingId, setActiveMeetingId] = useState<string | null>(null);
+  const { socket, connected } = useSocket();
 
   const renderSection = () => {
     switch (activeSection) {
       case "agents":
-        return <AgentHub />;
+        return <AgentHub socket={socket} />;
       case "boardroom":
-        return <Boardroom />;
-      case "command":
-        return <CommandChat />;
-      case "feed":
-        return <OrchestrationFeed />;
-      case "projects":
-        return <ProjectsBoard />;
+        return <Boardroom socket={socket} />;
+      case "meeting":
+        return activeMeetingId ? 
+          <ActiveMeeting socket={socket} meetingId={activeMeetingId} /> : 
+          <div className="text-center py-20 text-gray-500">Select a meeting from the Boardroom</div>;
       default:
-        return <AgentHub />;
+        return <AgentHub socket={socket} />;
     }
   };
 
   const navItems = [
     { id: "agents", label: "AGENT HUB", icon: "🤖" },
     { id: "boardroom", label: "BOARDROOM", icon: "👥" },
-    { id: "command", label: "COMMAND", icon: "💬" },
-    { id: "feed", label: "ORCHESTRATION", icon: "📡" },
-    { id: "projects", label: "PROJECTS", icon: "📋" },
   ];
 
   return (
@@ -362,9 +502,11 @@ export default function Home() {
               PANIC <span className="text-red-500">OS</span>
             </h1>
           </div>
-          <div className="flex items-center gap-2 text-sm text-gray-400">
-            <span className="h-2 w-2 rounded-full bg-green-500 animate-pulse shadow-[0_0_10px_rgba(34,197,94,0.8)]"></span>
-            SYSTEM ONLINE
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2 text-sm text-gray-400">
+              <span className={`h-2 w-2 rounded-full ${connected ? 'bg-green-500 animate-pulse' : 'bg-red-500'} shadow-[0_0_10px_rgba(34,197,94,0.8)]`}></span>
+              {connected ? 'SYSTEM ONLINE' : 'OFFLINE'}
+            </div>
           </div>
         </div>
       </header>
@@ -388,28 +530,6 @@ export default function Home() {
           ))}
         </div>
       </nav>
-
-      {/* Stats Bar */}
-      <div className="bg-[#0f0f0f] border-b border-[#2a2a2a] px-6 py-3">
-        <div className="grid grid-cols-4 gap-4">
-          <div className="bg-[#1a1a1a] border border-[#2a2a2a] p-3 rounded">
-            <div className="text-2xl font-mono font-bold text-red-400 shadow-red-500">6</div>
-            <div className="text-xs font-mono text-gray-500 mt-1">AGENTS</div>
-          </div>
-          <div className="bg-[#1a1a1a] border border-[#2a2a2a] p-3 rounded">
-            <div className="text-2xl font-mono font-bold text-green-400">4</div>
-            <div className="text-xs font-mono text-gray-500 mt-1">ACTIVE</div>
-          </div>
-          <div className="bg-[#1a1a1a] border border-[#2a2a2a] p-3 rounded">
-            <div className="text-2xl font-mono font-bold text-red-400">12</div>
-            <div className="text-xs font-mono text-gray-500 mt-1">TASKS</div>
-          </div>
-          <div className="bg-[#1a1a1a] border border-[#2a2a2a] p-3 rounded">
-            <div className="text-2xl font-mono font-bold text-blue-400">8</div>
-            <div className="text-xs font-mono text-gray-500 mt-1">PROJECTS</div>
-          </div>
-        </div>
-      </div>
 
       {/* Content Area */}
       <div className="p-6">
