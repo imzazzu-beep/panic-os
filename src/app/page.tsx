@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import io, { Socket } from "socket.io-client";
 
 // Types
 interface Agent {
@@ -31,45 +30,24 @@ interface Message {
   type: 'user' | 'agent';
 }
 
-// API Configuration
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3002';
-
-// Custom hook for WebSocket
-function useSocket() {
-  const [socket, setSocket] = useState<Socket | null>(null);
-  const [connected, setConnected] = useState(false);
-
-  useEffect(() => {
-    const newSocket = io(API_URL);
-    
-    newSocket.on('connect', () => {
-      console.log('Connected to Panic OS server');
-      setConnected(true);
-    });
-
-    newSocket.on('disconnect', () => {
-      console.log('Disconnected from Panic OS server');
-      setConnected(false);
-    });
-
-    setSocket(newSocket);
-
-    return () => {
-      newSocket.close();
-    };
-  }, []);
-
-  return { socket, connected };
-}
+// Agent definitions
+const AGENT_TYPES: Record<string, Omit<Agent, 'status' | 'task'>> = {
+  builder: { id: 'builder', name: 'Builder', role: 'Execution Engine', icon: '🛠️', tag: 'Pragmatic' },
+  researcher: { id: 'researcher', name: 'Researcher', role: 'Information Gatherer', icon: '🔍', tag: 'Thorough' },
+  qa: { id: 'qa', name: 'QA', role: 'Quality Assurance', icon: '🧪', tag: 'Analytical' },
+  docs: { id: 'docs', name: 'Docs', role: 'Documentation', icon: '📝', tag: 'Detail-oriented' },
+  reviewer: { id: 'reviewer', name: 'Reviewer', role: 'Code Reviewer', icon: '👁️', tag: 'Critical' },
+  panic: { id: 'panic', name: 'Panic', role: 'Coordinator', icon: '⚡', tag: 'Strategic' },
+};
 
 // Agent Hub Component
-function AgentHub({ socket }: { socket: Socket | null }) {
+function AgentHub() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(true);
 
   const fetchAgents = useCallback(async () => {
     try {
-      const response = await fetch(`${API_URL}/api/agents`);
+      const response = await fetch('/api/agents');
       const data = await response.json();
       setAgents(data);
     } catch (error) {
@@ -81,13 +59,13 @@ function AgentHub({ socket }: { socket: Socket | null }) {
 
   useEffect(() => {
     fetchAgents();
-    const interval = setInterval(fetchAgents, 5000);
+    const interval = setInterval(fetchAgents, 3000);
     return () => clearInterval(interval);
   }, [fetchAgents]);
 
   const spawnAgent = async (agentId: string) => {
     try {
-      await fetch(`${API_URL}/api/agents/${agentId}/spawn`, {
+      await fetch(`/api/agents/${agentId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ task: 'General assistance' })
@@ -100,7 +78,7 @@ function AgentHub({ socket }: { socket: Socket | null }) {
 
   const killAgent = async (agentId: string) => {
     try {
-      await fetch(`${API_URL}/api/agents/${agentId}/kill`, { method: 'POST' });
+      await fetch(`/api/agents/${agentId}/kill`, { method: 'POST' });
       fetchAgents();
     } catch (error) {
       console.error('Error killing agent:', error);
@@ -181,27 +159,24 @@ function AgentHub({ socket }: { socket: Socket | null }) {
 }
 
 // Boardroom Component
-function Boardroom({ socket }: { socket: Socket | null }) {
+function Boardroom() {
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newMeetingTitle, setNewMeetingTitle] = useState('');
   const [selectedAgents, setSelectedAgents] = useState<string[]>([]);
-  const [availableAgents, setAvailableAgents] = useState<Agent[]>([]);
+  const [activeMeeting, setActiveMeeting] = useState<Meeting | null>(null);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [input, setInput] = useState('');
 
   useEffect(() => {
     fetchMeetings();
-    fetchAvailableAgents();
-    
-    if (socket) {
-      socket.on('meeting:ended', () => {
-        fetchMeetings();
-      });
-    }
-  }, [socket]);
+    const interval = setInterval(fetchMeetings, 3000);
+    return () => clearInterval(interval);
+  }, []);
 
   const fetchMeetings = async () => {
     try {
-      const response = await fetch(`${API_URL}/api/meetings`);
+      const response = await fetch('/api/meetings');
       const data = await response.json();
       setMeetings(data);
     } catch (error) {
@@ -209,19 +184,9 @@ function Boardroom({ socket }: { socket: Socket | null }) {
     }
   };
 
-  const fetchAvailableAgents = async () => {
-    try {
-      const response = await fetch(`${API_URL}/api/agents`);
-      const data = await response.json();
-      setAvailableAgents(data);
-    } catch (error) {
-      console.error('Error fetching agents:', error);
-    }
-  };
-
   const createMeeting = async () => {
     try {
-      const response = await fetch(`${API_URL}/api/meetings`, {
+      const response = await fetch('/api/meetings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -231,19 +196,14 @@ function Boardroom({ socket }: { socket: Socket | null }) {
       });
       const meeting = await response.json();
       
-      // Start the meeting with agents
-      if (socket) {
-        socket.emit('meeting:start', {
-          meetingId: meeting.id,
-          title: meeting.title,
-          participants: selectedAgents
-        });
-      }
-      
       setShowCreateModal(false);
       setNewMeetingTitle('');
       setSelectedAgents([]);
       fetchMeetings();
+      
+      // Auto-open the new meeting
+      setActiveMeeting(meeting);
+      setMessages([]);
     } catch (error) {
       console.error('Error creating meeting:', error);
     }
@@ -251,11 +211,53 @@ function Boardroom({ socket }: { socket: Socket | null }) {
 
   const endMeeting = async (meetingId: string) => {
     try {
-      await fetch(`${API_URL}/api/meetings/${meetingId}/end`, { method: 'POST' });
+      await fetch(`/api/meetings/${meetingId}/end`, { method: 'POST' });
       fetchMeetings();
+      if (activeMeeting?.id === meetingId) {
+        setActiveMeeting(null);
+        setMessages([]);
+      }
     } catch (error) {
       console.error('Error ending meeting:', error);
     }
+  };
+
+  const sendMessage = () => {
+    if (!input.trim() || !activeMeeting) return;
+    
+    const msg: Message = {
+      id: Date.now().toString(),
+      content: input,
+      sender: 'You',
+      timestamp: new Date().toISOString(),
+      type: 'user'
+    };
+    
+    setMessages(prev => [...prev, msg]);
+    setInput('');
+    
+    // Simulate agent responses
+    setTimeout(() => {
+      const responses = [
+        "I'm analyzing that now...",
+        "Good point. Let me think about this.",
+        "That aligns with our strategy.",
+        "I have some thoughts on this.",
+        "Agreed. Let's proceed with that."
+      ];
+      const randomResponse = responses[Math.floor(Math.random() * responses.length)];
+      const randomAgent = activeMeeting.participants[Math.floor(Math.random() * activeMeeting.participants.length)];
+      
+      const agentMsg: Message = {
+        id: (Date.now() + 1).toString(),
+        content: randomResponse,
+        sender: AGENT_TYPES[randomAgent]?.name || 'Agent',
+        timestamp: new Date().toISOString(),
+        type: 'agent'
+      };
+      
+      setMessages(prev => [...prev, agentMsg]);
+    }, 1000 + Math.random() * 2000);
   };
 
   return (
@@ -286,7 +288,7 @@ function Boardroom({ socket }: { socket: Socket | null }) {
             <div className="mb-4">
               <p className="text-sm text-gray-500 mb-2">Select participants:</p>
               <div className="space-y-2">
-                {availableAgents.map(agent => (
+                {Object.values(AGENT_TYPES).map(agent => (
                   <label key={agent.id} className="flex items-center gap-2 cursor-pointer">
                     <input
                       type="checkbox"
@@ -308,7 +310,8 @@ function Boardroom({ socket }: { socket: Socket | null }) {
             <div className="flex gap-2">
               <button
                 onClick={createMeeting}
-                className="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 rounded font-medium"
+                disabled={!newMeetingTitle || selectedAgents.length === 0}
+                className="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 rounded font-medium disabled:opacity-50"
               >
                 Start Meeting
               </button>
@@ -335,6 +338,12 @@ function Boardroom({ socket }: { socket: Socket | null }) {
                     ACTIVE
                   </span>
                   <button
+                    onClick={() => setActiveMeeting(meeting)}
+                    className="text-xs font-mono px-2 py-1 rounded bg-blue-500/20 text-blue-400 hover:bg-blue-500/30"
+                  >
+                    JOIN
+                  </button>
+                  <button
                     onClick={() => endMeeting(meeting.id)}
                     className="text-xs font-mono px-2 py-1 rounded bg-red-500/20 text-red-400 hover:bg-red-500/30"
                   >
@@ -344,12 +353,12 @@ function Boardroom({ socket }: { socket: Socket | null }) {
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-xs text-gray-500">Participants:</span>
-                <span className="text-sm">{meeting.participants.join(", ")}</span>
+                <span className="text-sm">{meeting.participants.map(id => AGENT_TYPES[id]?.name).join(", ")}</span>
               </div>
             </div>
           ))}
           {meetings.filter(m => m.status === 'active').length === 0 && (
-            <p className="text-gray-500 text-center py-8">No active meetings</p>
+            <p className="text-gray-500 text-center py-8">No active meetings. Create one to get started!</p>
           )}
         </div>
 
@@ -367,120 +376,70 @@ function Boardroom({ socket }: { socket: Socket | null }) {
           ))}
         </div>
       </div>
-    </div>
-  );
-}
 
-// Active Meeting Chat Component
-function ActiveMeeting({ socket, meetingId }: { socket: Socket | null; meetingId: string }) {
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [input, setInput] = useState('');
-  const [meeting, setMeeting] = useState<Meeting | null>(null);
-
-  useEffect(() => {
-    if (!socket || !meetingId) return;
-
-    // Join the meeting room
-    socket.emit('meeting:join', meetingId);
-
-    // Load meeting history
-    fetch(`${API_URL}/api/meetings/${meetingId}`)
-      .then(res => res.json())
-      .then(data => {
-        setMeeting(data);
-        if (data.messages) setMessages(data.messages);
-      });
-
-    // Listen for new messages
-    socket.on('meeting:message', (msg: Message) => {
-      setMessages(prev => [...prev, msg]);
-    });
-
-    return () => {
-      socket.off('meeting:message');
-    };
-  }, [socket, meetingId]);
-
-  const sendMessage = () => {
-    if (!input.trim() || !socket || !meetingId) return;
-    
-    socket.emit('meeting:message', {
-      meetingId,
-      message: input,
-      sender: 'You'
-    });
-    
-    setInput('');
-  };
-
-  if (!meetingId) return null;
-
-  return (
-    <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg h-[500px] flex flex-col">
-      <div className="p-4 border-b border-[#2a2a2a] flex items-center justify-between">
-        <h3 className="font-semibold">{meeting?.title || 'Meeting'}</h3>
-        <span className="text-xs text-green-400 flex items-center gap-1">
-          <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-          LIVE
-        </span>
-      </div>
-      
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {messages.map((msg) => (
-          <div key={msg.id} className={`flex ${msg.type === 'user' ? "justify-end" : "justify-start"}`}>
-            <div className={`max-w-[70%] rounded-lg p-3 ${msg.type === 'user' ? "bg-red-600 text-white" : "bg-[#0f0f0f] border border-[#2a2a2a]"}`}>
-              <div className="flex items-center gap-2 mb-1">
-                <span className="text-xs font-mono font-semibold">{msg.sender}</span>
-                <span className="text-xs opacity-50">
-                  {new Date(msg.timestamp).toLocaleTimeString()}
-                </span>
-              </div>
-              <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
-            </div>
+      {/* Active Meeting Chat */}
+      {activeMeeting && (
+        <div className="mt-8 bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg h-[500px] flex flex-col">
+          <div className="p-4 border-b border-[#2a2a2a] flex items-center justify-between">
+            <h3 className="font-semibold">{activeMeeting.title}</h3>
+            <span className="text-xs text-green-400 flex items-center gap-1">
+              <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+              LIVE
+            </span>
           </div>
-        ))}
-      </div>
-      
-      <div className="p-4 border-t border-[#2a2a2a] flex gap-2">
-        <input
-          type="text"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyPress={(e) => e.key === "Enter" && sendMessage()}
-          placeholder="Type your message..."
-          className="flex-1 bg-[#0f0f0f] border border-[#2a2a2a] rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-red-500"
-        />
-        <button
-          onClick={sendMessage}
-          className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg font-medium transition-colors"
-        >
-          Send
-        </button>
-      </div>
+          
+          <div className="flex-1 overflow-y-auto p-4 space-y-4">
+            {messages.map((msg) => (
+              <div key={msg.id} className={`flex ${msg.type === 'user' ? "justify-end" : "justify-start"}`}>
+                <div className={`max-w-[70%] rounded-lg p-3 ${msg.type === 'user' ? "bg-red-600 text-white" : "bg-[#0f0f0f] border border-[#2a2a2a]"}`}>
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-xs font-mono font-semibold">{msg.sender}</span>
+                    <span className="text-xs opacity-50">
+                      {new Date(msg.timestamp).toLocaleTimeString()}
+                    </span>
+                  </div>
+                  <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+          
+          <div className="p-4 border-t border-[#2a2a2a] flex gap-2">
+            <input
+              type="text"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyPress={(e) => e.key === "Enter" && sendMessage()}
+              placeholder="Type your message..."
+              className="flex-1 bg-[#0f0f0f] border border-[#2a2a2a] rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-red-500"
+            />
+            <button
+              onClick={sendMessage}
+              className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg font-medium transition-colors"
+            >
+              Send
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
 // Main Dashboard Component
-type Section = "agents" | "boardroom" | "meeting";
+type Section = "agents" | "boardroom";
 
 export default function Home() {
   const [activeSection, setActiveSection] = useState<Section>("agents");
-  const [activeMeetingId, setActiveMeetingId] = useState<string | null>(null);
-  const { socket, connected } = useSocket();
 
   const renderSection = () => {
     switch (activeSection) {
       case "agents":
-        return <AgentHub socket={socket} />;
+        return <AgentHub />;
       case "boardroom":
-        return <Boardroom socket={socket} />;
-      case "meeting":
-        return activeMeetingId ? 
-          <ActiveMeeting socket={socket} meetingId={activeMeetingId} /> : 
-          <div className="text-center py-20 text-gray-500">Select a meeting from the Boardroom</div>;
+        return <Boardroom />;
       default:
-        return <AgentHub socket={socket} />;
+        return <AgentHub />;
     }
   };
 
@@ -502,11 +461,9 @@ export default function Home() {
               PANIC <span className="text-red-500">OS</span>
             </h1>
           </div>
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2 text-sm text-gray-400">
-              <span className={`h-2 w-2 rounded-full ${connected ? 'bg-green-500 animate-pulse' : 'bg-red-500'} shadow-[0_0_10px_rgba(34,197,94,0.8)]`}></span>
-              {connected ? 'SYSTEM ONLINE' : 'OFFLINE'}
-            </div>
+          <div className="flex items-center gap-2 text-sm text-gray-400">
+            <span className="h-2 w-2 rounded-full bg-green-500 animate-pulse"></span>
+            SYSTEM ONLINE
           </div>
         </div>
       </header>
@@ -530,6 +487,28 @@ export default function Home() {
           ))}
         </div>
       </nav>
+
+      {/* Stats Bar */}
+      <div className="bg-[#0f0f0f] border-b border-[#2a2a2a] px-6 py-3">
+        <div className="grid grid-cols-4 gap-4">
+          <div className="bg-[#1a1a1a] border border-[#2a2a2a] p-3 rounded">
+            <div className="text-2xl font-mono font-bold text-red-400 shadow-red-500">6</div>
+            <div className="text-xs font-mono text-gray-500 mt-1">AGENTS</div>
+          </div>
+          <div className="bg-[#1a1a1a] border border-[#2a2a2a] p-3 rounded">
+            <div className="text-2xl font-mono font-bold text-green-400">0</div>
+            <div className="text-xs font-mono text-gray-500 mt-1">ACTIVE</div>
+          </div>
+          <div className="bg-[#1a1a1a] border border-[#2a2a2a] p-3 rounded">
+            <div className="text-2xl font-mono font-bold text-red-400">0</div>
+            <div className="text-xs font-mono text-gray-500 mt-1">MEETINGS</div>
+          </div>
+          <div className="bg-[#1a1a1a] border border-[#2a2a2a] p-3 rounded">
+            <div className="text-2xl font-mono font-bold text-blue-400">1</div>
+            <div className="text-xs font-mono text-gray-500 mt-1">PROJECTS</div>
+          </div>
+        </div>
+      </div>
 
       {/* Content Area */}
       <div className="p-6">
